@@ -29,7 +29,7 @@ cd SimpleReads-API
 
 Accessing the 'api_session' Screen Session
 ------------------------------------------
-This section provides a guide on managing and accessing the 'api_session' screen session where the Flask application is running.
+This section provides a guide on managing and accessing the 'api_session' screen session. The 'screen' command in Linux provides a way to run a command-line program which continues to run even after you've disconnected. In the context of our application, the screen session 'api_session' is used to keep the Flask application running continuously in the background, even if you disconnect from the server.
 
 Starting the Screen Session
 ```
