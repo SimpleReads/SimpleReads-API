@@ -14,8 +14,19 @@ from dotenv import load_dotenv
 
 app = Flask(__name__)
 
-# Global variable to store the deployed model reference
+# Global variable to store the deployed model reference and endpoint name
 llm = None
+endpoint_name = "simplereads-model" # consistent naming convention
+
+def check_endpoint_status():
+    client = boto3.client('sagemaker')
+    try:
+        response = client.describe_endpoint(EndpointName=endpoint_name)
+        return response['EndpointStatus']
+    except:
+        return None
+
+
 
 def load_env_variables():
     load_dotenv()
@@ -64,11 +75,23 @@ def deploy_model(sess, role):
         model_data=s3_model_uri,
         env=config
     )
+
+    # Check if endpoint with given name exists
+    sagemaker_client = boto3.client('sagemaker')
+    try:
+        sagemaker_client.describe_endpoint(EndpointName=endpoint_name)
+        print(f"Endpoint {endpoint_name} already exists. Not deploying a new one.")
+        return None  # You can also return an instance of the existing model if needed.
+    except sagemaker_client.exceptions.ClientError:
+        pass  # Endpoint does not exist, proceed with deployment.
+
     return llm_model.deploy(
         initial_instance_count=1,
         instance_type=instance_type,
         container_startup_health_check_timeout=health_check_timeout,
+        endpoint_name=endpoint_name  # Add this line to use a consistent endpoint name
     )
+
 
 
 def construct_simplification_instruction(text):
@@ -95,8 +118,14 @@ def get_simplified_text(text, model):
     }
 
     # send request to endpoint
-    response = model.predict(payload)
-    output = response[0]['generated_text']
+    serialized_payload = json.dumps(payload).encode('utf-8')
+    model.content_type = "application/json"
+    response = model.predict(serialized_payload)
+    decoded_response = response.decode('utf-8')
+    parsed_response = json.loads(decoded_response)
+
+    print("response", parsed_response)
+    output = parsed_response[0]['generated_text']
     # \n\n### Answer\nWe present QLORA remove everything before and including ### Answer
     output = output.split("### Answer\n")[1]
     return output
@@ -106,49 +135,147 @@ def get_simplified_text(text, model):
 #     return text
 
 
+# @app.route("/start", methods=["POST"])
+# def start():
+#     # global llm
+#     try:
+#         message = "START"
+#         # env_vars = load_env_variables()
+#         # boto_session = create_boto_session(env_vars)
+#         # role = get_sagemaker_role_arn(env_vars)
+#         # sess = get_sagemaker_session(boto_session)
+#         # llm = deploy_model(sess, role)
+#         response = jsonify({"message": message})
+#     except Exception as e:
+#         response = jsonify({"message": f"Error: {str(e)}"})
+#         response.status_code = 500  # Indicates a server error
+
+#     response.headers.add("Access-Control-Allow-Origin", "*")
+#     return response
+
+def check_endpoint_status():
+    """
+    Check the status of the SageMaker endpoint.
+    """
+    # We assume you have your AWS credentials set up either as environment variables or in a configuration file.
+    sagemaker_client = boto3.client('sagemaker')
+    try:
+        # Use the global endpoint name you've defined
+        response = sagemaker_client.describe_endpoint(EndpointName=endpoint_name)
+        return response['EndpointStatus']
+    except sagemaker_client.exceptions.ClientError as e:
+        if e.response['Error']['Code'] == 'ValidationException':
+            # Endpoint doesn't exist
+            return None
+        else:
+            # Raise the exception if it's another kind of error
+            raise
+
+
 @app.route("/start", methods=["POST"])
 def start():
-    # global llm
+    global llm
     try:
-        message = "START"
-        # env_vars = load_env_variables()
-        # boto_session = create_boto_session(env_vars)
-        # role = get_sagemaker_role_arn(env_vars)
-        # sess = get_sagemaker_session(boto_session)
-        # llm = deploy_model(sess, role)
+        endpoint_status = check_endpoint_status()
+
+        if endpoint_status == "InService":
+            message = "Model is already running"
+        elif endpoint_status in ["Creating", "Updating", "RollingBack"]:
+            message = "Model is starting up. Please wait."
+        elif endpoint_status is None:  # The endpoint does not exist, so it's safe to deploy a new one.
+            env_vars = load_env_variables()
+            boto_session = create_boto_session(env_vars)
+            role = get_sagemaker_role_arn(env_vars)
+            sess = get_sagemaker_session(boto_session)
+            llm = deploy_model(sess, role)
+            message = "START"
+        else:
+            # Catch any other unexpected statuses
+            message = f"Model has status '{endpoint_status}'. Not deploying a new model."
+
         response = jsonify({"message": message})
+        print(message)
     except Exception as e:
+        print(e)
         response = jsonify({"message": f"Error: {str(e)}"})
-        response.status_code = 500  # Indicates a server error
+        response.status_code = 500
 
     response.headers.add("Access-Control-Allow-Origin", "*")
     return response
+
+
+
+# @app.route("/stop", methods=["POST"])
+# def stop():
+#     # global llm
+#     message = "STOP"
+#     # if llm:
+#     #     llm.delete_model()
+#     #     llm.delete_endpoint()
+#     #     print("Model and endpoint deleted successfully")
+#     response = jsonify({"message": message})
+#     response.headers.add("Access-Control-Allow-Origin", "*")
+#     return response
 
 
 @app.route("/stop", methods=["POST"])
 def stop():
-    # global llm
-    message = "STOP"
-    # if llm:
-    #     llm.delete_model()
-    #     llm.delete_endpoint()
-    #     print("Model and endpoint deleted successfully")
-    response = jsonify({"message": message})
+    global llm
+    try:
+        endpoint_status = check_endpoint_status()
+        if endpoint_status == "InService":
+            llm.delete_model()
+            llm.delete_endpoint()
+            print("Model and endpoint deleted successfully")
+            message = "STOP"
+        else:
+            message = "Model is not running"
+        
+        response = jsonify({"message": message})
+    except Exception as e:
+        response = jsonify({"message": f"Error: {str(e)}"})
+        response.status_code = 500
+
     response.headers.add("Access-Control-Allow-Origin", "*")
     return response
 
 
+# @app.route("/simplify_text", methods=["POST"])
+# def simplify():
+#     data = request.json
+#     text = data.get('text')
+#     print(text)
+
+#     # # Get the simplified text from the model
+#     # simplified_text = get_simplified_text(text1, llm)
+
+#     # response = jsonify({"message": simplified_text})
+#     response = jsonify({"message": text})
+#     response.headers.add("Access-Control-Allow-Origin", "*")
+#     response.headers.add("Access-Control-Allow-Methods", "GET, POST")
+#     return response
+
+
 @app.route("/simplify_text", methods=["POST"])
 def simplify():
-    text1 = request.form["text1"]
+    global llm
+    data = request.json
+    text = data.get('text')
+    print("initial", text)
+    
+    # Check if the model reference is None
+    if not llm:
+        llm = sagemaker.predictor.RealTimePredictor(endpoint_name=endpoint_name)
 
     # Get the simplified text from the model
-    simplified_text = get_simplified_text(text1, llm)
+    simplified_text = get_simplified_text(text, llm)
+    print("simplified", simplified_text)
 
     response = jsonify({"message": simplified_text})
     response.headers.add("Access-Control-Allow-Origin", "*")
     response.headers.add("Access-Control-Allow-Methods", "GET, POST")
     return response
+
 
 
 @app.route("/parsePDF", methods=["POST"])
