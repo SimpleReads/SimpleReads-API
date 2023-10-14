@@ -3,6 +3,17 @@ SimpleReads-API Documentation
 
 Before starting any operation, if accessing remotely, SSH into the Linux server.
 
+SSH into the Server
+-------------------
+Before you can access the project repository and related files, you need to SSH into the server. The server is hosted on an EC2 AWS instance. 
+
+To SSH into the server, you'll need:
+
+1. The IP address of the server
+2. The appropriate `.pem` file to authenticate your access
+
+If you do not have these details or the necessary `.pem` file, please contact the system administrator or the responsible personnel in your team.
+
 Clone the Repository
 --------------------
 Clone the repository:
