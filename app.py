@@ -11,6 +11,8 @@ import boto3
 import os
 from dotenv import load_dotenv
 from datetime import datetime
+import requests
+import openai
 
 app = Flask(__name__)
 
@@ -27,7 +29,8 @@ def load_env_variables():
         'aws_default_region': os.getenv("AWS_DEFAULT_REGION"),
         'aws_access_key_id': os.getenv('AWS_ACCESS_KEY_ID'),
         'aws_secret_access_key': os.getenv('AWS_SECRET_ACCESS_KEY'),
-        'sagemaker_role_arn': os.getenv("SAGEMAKER_ROLE_ARN")
+        'sagemaker_role_arn': os.getenv("SAGEMAKER_ROLE_ARN"),
+        'openai_api_key': os.getenv("OPENAI_API_KEY")
     }
 
 env_vars = load_env_variables()
@@ -160,29 +163,6 @@ def get_simplified_text(text, model):
         output = text
     return output
 
-# # example function that does not inference
-# def get_simplified_text(text, model):
-#     return text
-
-
-# @app.route("/start", methods=["POST"])
-# def start():
-#     # global llm
-#     try:
-#         message = "START"
-#         # env_vars = load_env_variables()
-#         # boto_session = create_boto_session(env_vars)
-#         # role = get_sagemaker_role_arn(env_vars)
-#         # sess = get_sagemaker_session(boto_session)
-#         # llm = deploy_model(sess, role)
-#         response = jsonify({"message": message})
-#     except Exception as e:
-#         response = jsonify({"message": f"Error: {str(e)}"})
-#         response.status_code = 500  # Indicates a server error
-
-#     response.headers.add("Access-Control-Allow-Origin", "*")
-#     return response
-
 def check_endpoint_status():
     """
     Check the status of the SageMaker endpoint.
@@ -251,20 +231,6 @@ def start():
     return response
 
 
-
-# @app.route("/stop", methods=["POST"])
-# def stop():
-#     # global llm
-#     message = "STOP"
-#     # if llm:
-#     #     llm.delete_model()
-#     #     llm.delete_endpoint()
-#     #     print("Model and endpoint deleted successfully")
-#     response = jsonify({"message": message})
-#     response.headers.add("Access-Control-Allow-Origin", "*")
-#     return response
-
-
 @app.route("/stop", methods=["POST"])
 def stop():
     global llm
@@ -285,22 +251,6 @@ def stop():
 
     response.headers.add("Access-Control-Allow-Origin", "*")
     return response
-
-
-# @app.route("/simplify_text", methods=["POST"])
-# def simplify():
-#     data = request.json
-#     text = data.get('text')
-#     print(text)
-
-#     # # Get the simplified text from the model
-#     # simplified_text = get_simplified_text(text1, llm)
-
-#     # response = jsonify({"message": simplified_text})
-#     response = jsonify({"message": text})
-#     response.headers.add("Access-Control-Allow-Origin", "*")
-#     response.headers.add("Access-Control-Allow-Methods", "GET, POST")
-#     return response
 
 
 @app.route("/simplify_text", methods=["POST"])
@@ -333,6 +283,43 @@ def simplify():
             "so we can check AWS to ensure the model has been turned off. Thank you!"
 
         )
+    })
+    response.headers.add("Access-Control-Allow-Origin", "*")
+    response.headers.add("Access-Control-Allow-Methods", "GET, POST")
+    return response
+
+def get_gpt4_text(text):
+    """
+    Sends a simplification request to the ChatGPT-4 API and returns the simplified text.
+    """
+    env_vars = load_env_variables()
+    openai.api_key = env_vars['openai_api_key']
+
+    # Send chat request using OpenAI SDK
+    completion = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[
+            {"role": "system", "content": "You are an expert at simplifying words and sentences and shortening large blocks of text."},
+            {"role": "user", "content": f"Please simplify this text: {text}"}
+        ]
+    )
+
+    try:
+        print(completion)
+        output = completion.choices[0].message["content"].strip()
+    except (IndexError, KeyError) as e:
+        print("Error in response", e)
+        output = text
+    return output
+
+@app.route("/simplify_gpt4", methods=["POST"])
+def simplify_gpt4():
+    data = request.json
+    text = data.get('text')
+    simplified_text = get_gpt4_text(text)
+
+    response = jsonify({
+        "message": simplified_text
     })
     response.headers.add("Access-Control-Allow-Origin", "*")
     response.headers.add("Access-Control-Allow-Methods", "GET, POST")

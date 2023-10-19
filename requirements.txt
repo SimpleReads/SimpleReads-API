@@ -3,3 +3,5 @@ pdfminer.six
 sagemaker
 boto3
 python-dotenv
+requests
+openai
