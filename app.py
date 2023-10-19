@@ -1,4 +1,3 @@
-# Flask Hello World API route on port
 from flask import Flask, request, jsonify
 from pdfminer.high_level import extract_text, extract_text_to_fp
 from pdfminer.layout import LAParams
@@ -11,21 +10,15 @@ import json
 import boto3
 import os
 from dotenv import load_dotenv
+from datetime import datetime
 
 app = Flask(__name__)
 
 # Global variable to store the deployed model reference and endpoint name
 llm = None
-endpoint_name = "simplereads-model" # consistent naming convention
-
-def check_endpoint_status():
-    client = boto3.client('sagemaker')
-    try:
-        response = client.describe_endpoint(EndpointName=endpoint_name)
-        return response['EndpointStatus']
-    except:
-        return None
-
+# Create a timestamp string
+timestamp = datetime.now().strftime('%Y%m%d%H%M%S')  # Format: YYYYMMDDHHMMS
+endpoint_name = f"simplereads-model-{timestamp}"  # consistent naming convention with added timestamp
 
 
 def load_env_variables():
@@ -36,6 +29,24 @@ def load_env_variables():
         'aws_secret_access_key': os.getenv('AWS_SECRET_ACCESS_KEY'),
         'sagemaker_role_arn': os.getenv("SAGEMAKER_ROLE_ARN")
     }
+
+env_vars = load_env_variables()
+
+def get_existing_endpoint_name(prefix="simplereads-model-"):
+    """
+    Retrieve the name of the existing endpoint if it exists.
+    """
+    sagemaker_client = boto3.client('sagemaker', region_name=env_vars['aws_default_region'])
+    response = sagemaker_client.list_endpoints(NameContains=prefix, MaxResults=100)
+    
+    for ep in response['Endpoints']:
+        if prefix in ep['EndpointName']:
+            return ep['EndpointName']
+    return None
+
+existing_endpoint_name = get_existing_endpoint_name()
+if existing_endpoint_name:
+    endpoint_name = existing_endpoint_name
 
 def create_boto_session(env_vars):
     return boto3.Session(
@@ -99,18 +110,27 @@ def construct_simplification_instruction(text):
     Constructs a simplification instruction based on the provided text.
     """
     return f"Please syntactically simplify this sentence: {text}"
+    # return f"Simplify and condense the following: {text}"
 
 def get_simplified_text(text, model):
     """
     Sends a simplification request to the model and returns the simplified text.
     """
+    print(text)
+    with open("input.txt", "a") as file:
+        file.write(text + "\n")
+
     instruction = construct_simplification_instruction(text)
+
+    with open("instruction.txt", "a") as file:
+        file.write(instruction + "\n")
+
     payload = {
         "inputs": instruction,
         "parameters": {
             "do_sample": True,
             "top_p": 0.9,
-            "temperature": 0.8,
+            "temperature": 0.1,
             "max_new_tokens": 1024,
             "repetition_penalty": 1.03,
             "stop": []
@@ -120,14 +140,24 @@ def get_simplified_text(text, model):
     # send request to endpoint
     serialized_payload = json.dumps(payload).encode('utf-8')
     model.content_type = "application/json"
-    response = model.predict(serialized_payload)
+    data_str = serialized_payload.decode('utf-8')
+    response = model.predict(data_str)
     decoded_response = response.decode('utf-8')
     parsed_response = json.loads(decoded_response)
 
-    print("response", parsed_response)
     output = parsed_response[0]['generated_text']
+
+    with open("output.txt", "a") as file:
+        file.write(output + "\n")
+
     # \n\n### Answer\nWe present QLORA remove everything before and including ### Answer
-    output = output.split("### Answer\n")[1]
+    try:
+        output = output.split("### Answer\n")[1]
+        print("no error")
+    except IndexError:
+        print("Index error")
+        print(text)
+        output = text
     return output
 
 # # example function that does not inference
@@ -172,6 +202,21 @@ def check_endpoint_status():
             raise
 
 
+def get_existing_endpoint():
+    """
+    Get the SageMaker Predictor instance for the existing endpoint.
+    """
+    # Create a session using boto3
+    session = boto3.Session()
+    
+    # Use the session to create a SageMaker runtime client
+    runtime_client = session.client("sagemaker-runtime")
+    
+    # Return a Predictor instance for the endpoint
+    return sagemaker.Predictor(endpoint_name=endpoint_name, sagemaker_runtime_client=runtime_client)
+
+
+
 @app.route("/start", methods=["POST"])
 def start():
     global llm
@@ -180,6 +225,8 @@ def start():
 
         if endpoint_status == "InService":
             message = "Model is already running"
+            # Assuming you have a function to get the current endpoint
+            llm = get_existing_endpoint()
         elif endpoint_status in ["Creating", "Updating", "RollingBack"]:
             message = "Model is starting up. Please wait."
         elif endpoint_status is None:  # The endpoint does not exist, so it's safe to deploy a new one.
@@ -261,17 +308,32 @@ def simplify():
     global llm
     data = request.json
     text = data.get('text')
-    print("initial", text)
+
     
     # Check if the model reference is None
     if not llm:
-        llm = sagemaker.predictor.RealTimePredictor(endpoint_name=endpoint_name)
+       llm = sagemaker.predictor.RealTimePredictor(endpoint_name=endpoint_name)
 
-    # Get the simplified text from the model
-    simplified_text = get_simplified_text(text, llm)
-    print("simplified", simplified_text)
+    endpoint_status = check_endpoint_status()
+    print(endpoint_status)
 
-    response = jsonify({"message": simplified_text})
+    if endpoint_status == "InService":
+        simplified_text = get_simplified_text(text, llm)
+        response = jsonify({
+            "message": simplified_text
+        })
+    elif endpoint_status in ["Creating", "Updating", "RollingBack", None]:
+        response = jsonify({
+        "message": (
+            "Model has not been turned on. If you require this feature, "
+            "it can be turned on by navigating to simple-reads-app.vercel.app/admin. "
+            "DO SO WITH CAUTION. Running the model costs $7 an hour including the "
+            "15-30 minute startup. Keep running time to a minimum but we understand you will need it on for testing. " 
+            "Contact riley-ball@outlook.com or jrf0047@gmail.com when finished "
+            "so we can check AWS to ensure the model has been turned off. Thank you!"
+
+        )
+    })
     response.headers.add("Access-Control-Allow-Origin", "*")
     response.headers.add("Access-Control-Allow-Methods", "GET, POST")
     return response
